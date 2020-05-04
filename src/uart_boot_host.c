@@ -193,6 +193,13 @@ typedef struct
     uint32_t                      bStart  : 1;
 } am_secboot_ios_pkthdr_t;
 
+typedef struct
+{
+    am_secboot_wired_msghdr_t msg;
+	uint32_t Sequence;
+	uint8_t Image_Blob[8180];
+}am_Data_Message;
+
 typedef enum
 {
     AM_SECBOOT_WIRED_MSGTYPE_HELLO,
@@ -216,6 +223,8 @@ am_uart_buffer(12 * 1024) g_psWriteData;
 am_uart_buffer(12 * 1024) g_psReadData;
 extern uint8_t IMGDataBegin;
 extern uint8_t IMGDataEnd;
+
+am_Data_Message g_Data_Message;
 
 struct
 {
@@ -676,17 +685,36 @@ void send_update(uint8_t *Blob, uint32_t size)
     pkt.hdr.bEnd = 1;
     pkt.hdr.length = (4*5);
     pkt.msg.msgType = AM_SECBOOT_WIRED_MSGTYPE_UPDATE;
-    pkt.msg.length = sizeof(am_secboot_wired_msghdr_t);
-	pkt.Total_Size = 13856;
+    pkt.msg.length = sizeof(pkt)-sizeof(am_secboot_ios_pkthdr_t);
+	pkt.Total_Size = size;
 	am_hal_crc32((uint32_t)Blob, size, &pkt.Blob_CRC32);
 	pkt.Valid_Size = 0;
 	am_hal_crc32((uint32_t)&pkt.msg.msgType, pkt.msg.length - sizeof(uint32_t), &pkt.msg.crc32);
-
-    PRT_INFO("pkt.Blob_CRC32 = %x\n", pkt.Blob_CRC32 );
 	PRT_INFO("pkt.msg.crc32 = %x\n", pkt.msg.crc32 );
+	PRT_INFO("pkt.msg.length = %d\n", pkt.msg.length);
+	PRT_INFO("pkt.msg.msgType = %x\n", pkt.msg.msgType);
+	PRT_INFO("pkt.Total_Size = %d\n", pkt.Total_Size);
+    PRT_INFO("pkt.Blob_CRC32 = %x\n", pkt.Blob_CRC32 );
+	
     
     //iom_slave_write(bSpi, IOSOFFSET_WRITE_CMD, (uint32_t*)&pkt, sizeof(pkt));
 }
+
+//*****************************************************************************
+//
+// Send a "DATA" packet.
+//
+//*****************************************************************************
+void send_data(uint8_t *Blob, uint32_t size, uint32_t seq)
+{
+	g_Data_Message.msg.msgType = AM_SECBOOT_WIRED_MSGTYPE_DATA;
+	g_Data_Message.msg.length = size+12;   
+	g_Data_Message.Sequence = seq;
+	memcpy(g_Data_Message.Image_Blob, Blob,size);
+	am_hal_crc32((uint32_t)&g_Data_Message.msg.msgType, g_Data_Message.msg.length - sizeof(uint32_t), &g_Data_Message.msg.crc32);
+	PRT_INFO("g_Data_Message.msg.crc32 = %x\n", g_Data_Message.msg.crc32 );
+}
+
 
 //*****************************************************************************
 //
@@ -718,7 +746,6 @@ main(void)
     //
     am_bsp_itm_printf_enable();
     am_util_stdio_printf("\nApollo3 UART to IOS Host Bridge IMG size: %d, %x, %x\n",((uint8_t *)(&IMGDataEnd) - (uint8_t *)(&IMGDataBegin)), (&IMGDataEnd), (&IMGDataBegin));
-	send_update((uint8_t *)(&IMGDataBegin), ((uint8_t *)(&IMGDataEnd) - (uint8_t *)(&IMGDataBegin)));
     if ( bSpi )
     {
         am_util_stdio_printf("SPI clock = %d.%d MHz\n",
@@ -851,13 +878,21 @@ main(void)
 				if( pHdr->msgType == AM_SECBOOT_WIRED_MSGTYPE_UPDATE)
 				{
 					PRT_INFO("UPDATE\nTotal Size     : %d\n", *((uint32_t *)(&g_psWriteData.bytes[2*4])));
+					PRT_INFO("CRC     : %x\n", *((uint32_t *)(&g_psWriteData.bytes[0*4])));
+					PRT_INFO("Length     : %d\n", *((uint16_t *)(&g_psWriteData.bytes[3*2])));
+					PRT_INFO("Message Type : %d\n", *((uint16_t *)(&g_psWriteData.bytes[2*2])));
 					PRT_INFO("Blob CRC     : %x\n", *((uint32_t *)(&g_psWriteData.bytes[3*4])));
 					PRT_INFO("Valid Size     : %d\n", *((uint32_t *)(&g_psWriteData.bytes[4*4])));
+					send_update((uint8_t *)(&IMGDataBegin), ((uint8_t *)(&IMGDataEnd) - (uint8_t *)(&IMGDataBegin)));
 				}
 
 				if( pHdr->msgType == AM_SECBOOT_WIRED_MSGTYPE_DATA)
 				{
 					PRT_INFO("DATA\nSequence     : %d\n", *((uint32_t *)(&g_psWriteData.bytes[2*4])));
+					PRT_INFO("CRC     : %x\n", *((uint32_t *)(&g_psWriteData.bytes[0*4])));
+					PRT_INFO("Length     : %d\n", *((uint16_t *)(&g_psWriteData.bytes[3*2])));
+					PRT_INFO("Message Type : %d\n", *((uint16_t *)(&g_psWriteData.bytes[2*2])));
+					send_data((uint8_t *)(&IMGDataBegin)+(*((uint32_t *)(&g_psWriteData.bytes[2*4]))), *((uint16_t *)(&g_psWriteData.bytes[3*2]))-12, *((uint32_t *)(&g_psWriteData.bytes[2*4])));
 				}
 
                 if ( 0 == ui32PktLength )
