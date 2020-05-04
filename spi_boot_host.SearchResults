@@ -1,5 +1,0 @@
----- u32IMGDataEnd Matches (5 in 2 files) ----
-Img_data.s (src):    EXPORT  u32IMGDataEnd
-Img_data.s (src):u32IMGDataEnd
-Uart_boot_host.c (src):extern uint32_t u32IMGDataEnd;
-Uart_boot_host.c (src):    am_util_stdio_printf("\nApollo3 UART to IOS Host Bridge IMG size: %d, %x, %x\n",((uint32_t)(&u32IMGDataEnd) - (uint32_t)(&u32IMGDataBegin)), (&u32IMGDataEnd), (&u32IMGDataBegin));
