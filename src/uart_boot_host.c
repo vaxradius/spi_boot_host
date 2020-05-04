@@ -200,6 +200,14 @@ typedef struct
 	uint8_t Image_Blob[8180];
 }am_Data_Message;
 
+typedef struct
+{
+    am_secboot_wired_msghdr_t msg;
+	uint32_t SrcMsg;
+	uint32_t Status;
+	uint32_t Sequence;
+}am_ACK_Message;
+
 typedef enum
 {
     AM_SECBOOT_WIRED_MSGTYPE_HELLO,
@@ -697,7 +705,83 @@ void send_update(uint8_t *Blob, uint32_t size)
     PRT_INFO("pkt.Blob_CRC32 = %x\n", pkt.Blob_CRC32 );
 	
     
-    //iom_slave_write(bSpi, IOSOFFSET_WRITE_CMD, (uint32_t*)&pkt, sizeof(pkt));
+    iom_slave_write(1, IOSOFFSET_WRITE_CMD, (uint32_t*)&pkt, sizeof(pkt));
+}
+
+
+void send_SPI_Data_Fragment(uint8_t * data_message)
+{
+    uint32_t ui32DotCnt = 0;
+	am_secboot_wired_msghdr_t *pHdr = (am_secboot_wired_msghdr_t *)data_message;
+    uint32_t ui32PktLength = pHdr->length;
+	
+	for (uint32_t index = 0; index < ui32PktLength; index += sizeof(g_IosPktData.data))
+    {
+        PRT_DATA("index             : %d\n", index);
+
+        g_IosPktData.header.bStart = 0;
+        g_IosPktData.header.bEnd = 0;
+        g_IosPktData.header.length = 0;
+
+        //
+        // If this is the first packet, then set the Start flag.
+        //
+        if ( 0 == index )
+        {
+            g_IosPktData.header.bStart = 1;
+        }
+
+        //
+        // If this this the last packet, then set the End flag.
+        //
+        if ((index + sizeof(g_IosPktData.data)) >= ui32PktLength)
+        {
+            g_IosPktData.header.bEnd = 1;
+        }
+
+        //
+        // Build and Send the next packet.
+        //
+        g_IosPktData.header.length = ((ui32PktLength - index) < sizeof(g_IosPktData.data)) ? (ui32PktLength - index) : sizeof(g_IosPktData.data);
+        memcpy(&g_IosPktData.data[0], data_message+index, g_IosPktData.header.length);
+        g_IosPktData.header.length += sizeof(am_secboot_ios_pkthdr_t);
+        bIosInt = false;
+
+        PRT_DATA("IOS Length        : %d\n", g_IosPktData.header.length);
+        PRT_DATA("IOS Start Bit     : %d\n", g_IosPktData.header.bStart);
+        PRT_DATA("IOS End Bit       : %d\n", g_IosPktData.header.bEnd);
+
+        if ( ui32DotCnt >= 20 )
+        {
+            PRT_INFO("\n");
+            ui32DotCnt = 0;
+        }
+        PRT_INFO("*");
+        ui32DotCnt++;
+
+        iom_slave_write(1, IOSOFFSET_WRITE_CMD, (uint32_t*)&g_IosPktData, g_IosPktData.header.length);
+
+        //
+        // Wait for the GPIO Interrupt before sending the next packet.
+        //
+        for (uint32_t timeout = 0; timeout < 100000; timeout++)
+        {
+            if ( bIosInt )
+            {
+                PRT_DATA("Received Handshake for next packet after %d us\n", timeout);
+                break;
+            }
+            else
+            {
+                am_util_delay_us(1);
+            }
+        }
+
+        if ( !bIosInt )
+        {
+            PRT_DATA("Timed out waiting for Handshake signal\n");
+        }
+    }
 }
 
 //*****************************************************************************
@@ -712,7 +796,61 @@ void send_data(uint8_t *Blob, uint32_t size, uint32_t seq)
 	g_Data_Message.Sequence = seq;
 	memcpy(g_Data_Message.Image_Blob, Blob,size);
 	am_hal_crc32((uint32_t)&g_Data_Message.msg.msgType, g_Data_Message.msg.length - sizeof(uint32_t), &g_Data_Message.msg.crc32);
-	PRT_INFO("g_Data_Message.msg.crc32 = %x\n", g_Data_Message.msg.crc32 );
+	PRT_INFO("g_Data_Message.msg.crc32 = %x\n", g_Data_Message.msg.crc32 );	
+	send_SPI_Data_Fragment((uint8_t *)&g_Data_Message);
+}
+
+void wait_4_ACK(void)
+{
+	uint32_t maxSize = MAX_SPI_SIZE;
+	//
+	// Wait for the GPIO Interrupt before sending the next packet.
+	//
+	for (uint32_t timeout = 0; timeout < 100000; timeout++)
+	{
+	    if ( bIosInt )
+	    {
+	        PRT_DATA("Received Handshake for next packet after %d us\n", timeout);
+	        break;
+	    }
+	    else
+	    {
+	        am_util_delay_us(1);
+	    }
+	}
+
+	if ( !bIosInt )
+	{
+	    PRT_INFO("Timed out waiting for Handshake signal\n");
+	}
+
+	if ( bIosInt == true )
+    {
+        bIosInt = false;
+        uint32_t iosSize = 0;
+
+        //
+        // Read the Data Size from the IOS.
+        //
+        iom_slave_read(1, IOSOFFSET_READ_FIFOCTR, &iosSize, 2);
+        iosSize = (iosSize > maxSize) ? maxSize : iosSize;
+
+        if ( iosSize > 0 )
+        {
+            //
+            // Read the Data from the IOS.
+            //
+            iom_slave_read(1, IOSOFFSET_READ_FIFO, (uint32_t*)&g_psReadData, iosSize);
+			am_ACK_Message *pAckMsg = (am_ACK_Message *)&g_psReadData;
+
+			PRT_INFO("pAckMsg->msg.crc32=%x\n", pAckMsg->msg.crc32);
+			PRT_INFO("pAckMsg->msg.msgType=%d\n", pAckMsg->msg.msgType);
+			PRT_INFO("pAckMsg->msg.length=%d\n", pAckMsg->msg.length);
+			PRT_INFO("pAckMsg->SrcMsg=%d\n", pAckMsg->SrcMsg);
+			PRT_INFO("pAckMsg->Status=%d\n", pAckMsg->Status);
+			PRT_INFO("pAckMsg->Sequence=%d\n", pAckMsg->Sequence);
+        }
+    }
 }
 
 
@@ -811,6 +949,15 @@ main(void)
     iom_slave_read(bSpi, IOSOFFSET_READ_FIFO, (uint32_t*)&g_psReadData, 88);
 #endif
 
+#if 1
+	send_update((uint8_t *)(&IMGDataBegin), ((uint8_t *)(&IMGDataEnd) - (uint8_t *)(&IMGDataBegin)));
+	wait_4_ACK();
+	send_data((uint8_t *)(&IMGDataBegin), 8180, 0);
+	wait_4_ACK();
+	send_data((uint8_t *)(&IMGDataBegin)+8180, 13856-8180, 8180);
+	wait_4_ACK();
+	
+#else
     //
     // Loop forever.
     //
@@ -986,5 +1133,6 @@ main(void)
             NVIC_EnableIRQ((IRQn_Type)(UART0_IRQn + UART_HOST));
         }
     }
+#endif
 }
 
